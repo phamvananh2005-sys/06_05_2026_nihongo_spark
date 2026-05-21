@@ -1081,19 +1081,35 @@ function AudioInput({ onAudioReady }) {
     console.log("🚀 Calling OpenAI...");
 
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("model", "gpt-4o-mini-transcribe");
+const audioBytes = await file.arrayBuffer();
+const base64Audio = btoa(
+  new Uint8Array(audioBytes).reduce((data, byte) => data + String.fromCharCode(byte), "")
+);
 
+const contents = [
+  {
+    parts: [
+      { text: "Hãy chuyển đổi đoạn âm thanh này thành văn bản chính xác." },
+      {
+        inlineData: {
+          mimeType: file.type,
+          data: base64Audio
+        }
+      }
+    ]
+  }
+];
 
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`
-      },
-      body: formData
-    });
+const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ contents })
+});
 
+const data = await res.json();
+const transcription = data.candidates[0].content.parts[0].text;
 
     const data = await res.json();
     console.log("✅ OpenAI transcript:", data.text);
