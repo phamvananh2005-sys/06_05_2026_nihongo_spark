@@ -1076,47 +1076,53 @@ function AudioInput({ onAudioReady }) {
   }, []);
 
 
-  // ✅ OpenAI fallback
-  const transcribeWithOpenAI = async (file) => {
-    console.log("🚀 Calling OpenAI...");
+const transcribeWithGemini = async (file) => {
+  console.log("🚀 Calling Gemini...");
 
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
 
-const audioBytes = await file.arrayBuffer();
-const base64Audio = btoa(
-  new Uint8Array(audioBytes).reduce((data, byte) => data + String.fromCharCode(byte), "")
-);
+  const uploadFormData = new FormData();
+  uploadFormData.append("file", file);
 
-const contents = [
-  {
-    parts: [
-      { text: "Hãy chuyển đổi đoạn âm thanh này thành văn bản chính xác." },
+  const uploadRes = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "X-Goog-Upload-Protocol": "multipart",
+      "X-Goog-Upload-Command": "upload, finalize",
+      "X-Goog-Header-Provider": "google-ai-studio",
+    },
+    body: uploadFormData,
+  });
+
+  const uploadData = await uploadRes.json();
+  const fileUri = uploadData.file.uri;
+
+  const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  
+  const promptData = {
+    contents: [
       {
-        inlineData: {
-          mimeType: file.type,
-          data: base64Audio
-        }
+        parts: [
+          { fileData: { mimeType: file.type, fileUri: fileUri } },
+          { text: "Transcribe this audio file accurately. Output only the transcribed text." }
+        ]
       }
     ]
-  }
-];
-
-const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json"
-  },
-  body: JSON.stringify({ contents })
-});
-
-const data = await res.json();
-const transcription = data.candidates[0].content.parts[0].text;
-
-    const data = await res.json();
-    console.log("✅ OpenAI transcript:", data.text);
-
-
-    return data.text;
   };
+
+  const res = await fetch(modelUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(promptData)
+  });
+
+  const data = await res.json();
+  const transcript = data.candidates[0].content.parts[0].text;
+  console.log("✅ Gemini transcript:", transcript);
+
+  return transcript;
+};
 
 
   const handleFileChange = (e) => {
