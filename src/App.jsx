@@ -991,34 +991,10 @@ Instructions:
 export const AudioInput = ({ onAudioReady }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [liveTranscript, setLiveTranscript] = useState("");
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
-  const recognitionRef = useRef(null);
-
-  // 🎤 SpeechRecognition (chỉ UI realtime)
-  useEffect(() => {
-    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) return;
-
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onresult = (e) => {
-      let text = "";
-      for (let i = 0; i < e.results.length; i++) {
-        text += e.results[i][0].transcript;
-      }
-      setLiveTranscript(text);
-    };
-
-    recognitionRef.current = recognition;
-  }, []);
 
   // 🎧 Recorder ổn định
   const createRecorder = (stream) => {
@@ -1031,7 +1007,7 @@ export const AudioInput = ({ onAudioReady }) => {
     return new MediaRecorder(stream);
   };
 
-  // 🧠 OpenAI
+  // 🧠 OpenAI transcribe
   const transcribe = async (file) => {
     const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
@@ -1062,7 +1038,6 @@ export const AudioInput = ({ onAudioReady }) => {
       const recorder = createRecorder(stream);
 
       chunksRef.current = [];
-      setLiveTranscript("");
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -1081,8 +1056,11 @@ export const AudioInput = ({ onAudioReady }) => {
 
         try {
           finalTranscript = await transcribe(file);
+
+          // 🔥 CHỈ log sau khi có kết quả
+          console.log("✅ AI RESULT:", finalTranscript);
         } catch (err) {
-          console.log("OpenAI error:", err);
+          console.log("❌ OpenAI error:", err);
         }
 
         onAudioReady(
@@ -1100,12 +1078,6 @@ export const AudioInput = ({ onAudioReady }) => {
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
 
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-        } catch {}
-      }
-
       timerRef.current = setInterval(() => {
         setRecordingTime((prev) => prev + 1);
       }, 1000);
@@ -1120,12 +1092,6 @@ export const AudioInput = ({ onAudioReady }) => {
 
     recorder.stop();
     recorder.stream.getTracks().forEach((t) => t.stop());
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
-    }
 
     setIsRecording(false);
   };
@@ -1181,11 +1147,6 @@ export const AudioInput = ({ onAudioReady }) => {
 
         {isRecording ? (
           <>
-            {/* realtime text */}
-            <div className="text-xs text-gray-500 mb-2 text-center">
-              {liveTranscript || "Đang nghe..."}
-            </div>
-
             <div className="flex items-center gap-3 mb-4">
               <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
               <span className="font-mono text-lg font-bold text-[#F26522]">
