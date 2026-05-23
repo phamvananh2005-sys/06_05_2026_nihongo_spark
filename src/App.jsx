@@ -936,7 +936,7 @@ Instructions:
 }`;
 
   const payload = {
-    model: "gpt-4o-mini",
+    model: "gpt-4.1-nano",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: "Grade this student's speech based on the transcript provided." }
@@ -1071,7 +1071,7 @@ const transcribeWithOpenAI  = async (file) => {
   const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("model", "whisper-1");
+  formData.append("model", "gpt-4o-mini-transcribe");
 
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
