@@ -987,267 +987,239 @@ Instructions:
 // ---------------------------------------------------------
 // COMPONENT: THU ÂM (TÍCH HỢP SPEECH RECOGNITION + OPENAI )
 // ---------------------------------------------------------
-function AudioInput({ onAudioReady }) {
+export const AudioInput = ({ onAudioReady }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [liveTranscript, setLiveTranscript] = useState("");
+
   const timerRef = useRef(null);
   const recognitionRef = useRef(null);
-  const transcriptRef = useRef('');
+  const chunksRef = useRef([]);
 
-
-  // ✅ Detect SpeechRecognition
+  // ✅ Detect SpeechRecognition (chỉ để realtime UI)
   const isSpeechSupported =
     typeof window !== "undefined" &&
     (window.SpeechRecognition || window.webkitSpeechRecognition);
 
-
-  // ✅ Detect MIME type phù hợp (fix iPhone)
+  // ✅ MIME fix (iPhone + Safari)
   const getMimeType = () => {
-    if (typeof MediaRecorder === "undefined") return '';
+    if (typeof MediaRecorder === "undefined") return "";
 
+    if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
+    if (MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
+    if (MediaRecorder.isTypeSupported("audio/mpeg")) return "audio/mpeg";
 
-    if (MediaRecorder.isTypeSupported('audio/webm')) {
-      return 'audio/webm';
-    }
-
-
-    if (MediaRecorder.isTypeSupported('audio/mp4')) {
-      return 'audio/mp4';
-    }
-
-
-    if (MediaRecorder.isTypeSupported('audio/mpeg')) {
-      return 'audio/mpeg';
-    }
-
-
-    return '';
+    return "";
   };
 
-
+  // ✅ Setup SpeechRecognition (optional)
   useEffect(() => {
-    if (!isSpeechSupported) {
-      console.log("❌ No SpeechRecognition → will use OpenAI");
-      recognitionRef.current = null;
-      return;
-    }
-
-
-    console.log("✅ Using browser SpeechRecognition");
-
+    if (!isSpeechSupported) return;
 
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
-
     const recognition = new SpeechRecognition();
-    recognition.lang = 'ja-JP';
+
+    // ❗ không set lang → để browser tự theo hệ thống (đỡ sai hơn hardcode)
     recognition.continuous = true;
     recognition.interimResults = true;
 
-
     recognition.onresult = (event) => {
-      let fullTranscript = '';
-      for (let i = 0; i < event.results.length; ++i) {
-        fullTranscript += event.results[i][0].transcript;
+      let text = "";
+      for (let i = 0; i < event.results.length; i++) {
+        text += event.results[i][0].transcript;
       }
-      transcriptRef.current = fullTranscript;
+      setLiveTranscript(text);
     };
 
-
-    recognition.onerror = (err) => {
-      console.log("⚠️ SpeechRecognition error:", err);
+    recognition.onerror = (e) => {
+      console.log("SpeechRecognition error:", e);
     };
-
 
     recognitionRef.current = recognition;
   }, []);
 
+  // 🔥 OpenAI transcribe (AUTO detect language)
+  const transcribeWithOpenAI = async (file) => {
+    const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
-const transcribeWithOpenAI  = async (file) => {
-  console.log("🚀 Calling OpenAI...");
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("model", "gpt-4o-mini-transcribe");
 
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("model", "gpt-4o-mini-transcribe");
+    const res = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: formData,
+      }
+    );
 
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: formData
-  });
-
-  if (!res.ok) {
-    throw new Error(`OpenAI transcription error ${res.status}`);
-  }
-
-  const data = await res.json();
-  const transcript = data.text;
-  console.log("✅ OpenAI transcript:", transcript);
-
-  return transcript;
-};
-
-
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      onAudioReady(file, URL.createObjectURL(file), null, true);
+    if (!res.ok) {
+      throw new Error(`Transcription error: ${res.status}`);
     }
+
+    const data = await res.json();
+    return data.text;
   };
 
+  const handleFileChange = (e) => {
+    if (!e.target.files?.length) return;
+    const file = e.target.files[0];
+
+    onAudioReady(file, URL.createObjectURL(file), null, true);
+  };
 
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-
       const mimeType = getMimeType();
-      console.log("🎤 Using MIME type:", mimeType);
-
-
       const recorder = new MediaRecorder(
         stream,
         mimeType ? { mimeType } : {}
       );
 
+      chunksRef.current = [];
+      setLiveTranscript("");
 
-      const chunks = [];
-      transcriptRef.current = '';
-
-
-      if (recognitionRef.current) {
-        try { recognitionRef.current.start(); } catch (e) { }
-      }
-
-
-      recorder.ondataavailable = e => chunks.push(e.data);
-
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
 
       recorder.onstop = async () => {
-        const blob = new Blob(chunks, {
-          type: mimeType || 'audio/webm'
+        const blob = new Blob(chunksRef.current, {
+          type: mimeType || "audio/webm",
         });
 
+        const file = new File([blob], "recorded.webm", {
+          type: blob.type,
+        });
 
-        const extension = mimeType.includes('mp4')
-          ? 'mp4'
-          : mimeType.includes('mpeg')
-            ? 'mp3'
-            : 'webm';
+        let finalTranscript = "";
 
-
-        const file = new File(
-          [blob],
-          `recorded.${extension}`,
-          { type: blob.type }
-        );
-
-
-        let transcript = transcriptRef.current;
-
-
-        // 🔥 fallback OpenAI nếu không có SpeechRecognition
-        if (!isSpeechSupported) {
-          try {
-            transcript = await transcribeWithOpenAI(file);
-          } catch (e) {
-            console.log("❌ OpenAI error:", e);
-            transcript = null;
-          }
-        } else {
-          console.log("🧠 Browser transcript:", transcript);
+        try {
+          // 🔥 luôn dùng OpenAI → auto detect language
+          finalTranscript = await transcribeWithOpenAI(file);
+          console.log("✅ AI transcript:", finalTranscript);
+        } catch (err) {
+          console.log("❌ OpenAI error:", err);
+          finalTranscript = liveTranscript || null; // fallback nhẹ
         }
-
 
         onAudioReady(
           file,
           URL.createObjectURL(blob),
-          transcript,
+          finalTranscript,
           false
         );
-
 
         clearInterval(timerRef.current);
         setRecordingTime(0);
       };
 
-
       recorder.start();
       setMediaRecorder(recorder);
       setIsRecording(true);
 
-
-      timerRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
-
-
-    } catch (err) {
-      alert("Không thể truy cập Microphone.");
-    }
-  };
-
-
-  const stopRecording = () => {
-    if (mediaRecorder && isRecording) {
-      mediaRecorder.stop();
-
-
+      // 🎤 start realtime recognition (optional)
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) { }
+        try {
+          recognitionRef.current.start();
+        } catch {}
       }
 
-
-      setIsRecording(false);
-      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      timerRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
+    } catch (err) {
+      alert("Không thể truy cập microphone");
     }
   };
 
+  const stopRecording = () => {
+    if (!mediaRecorder) return;
+
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+    }
+
+    setIsRecording(false);
+  };
 
   return (
     <div className="grid md:grid-cols-2 gap-4">
-      <div onClick={() => !isRecording && document.getElementById('file-upload').click()} className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 group bg-white border-slate-300 hover:border-[#F26522]/50 ${isRecording ? 'opacity-50 pointer-events-none' : ''}`}>
-        <input id="file-upload" type="file" accept="audio/*,video/*" className="hidden" onChange={handleFileChange} />
-        <Upload size={28} className="text-[#F26522] mb-3 group-hover:-translate-y-1 transition-transform" />
+      {/* Upload */}
+      <div
+        onClick={() =>
+          !isRecording && document.getElementById("file-upload").click()
+        }
+        className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer bg-white hover:border-[#F26522]/50 ${
+          isRecording ? "opacity-50 pointer-events-none" : ""
+        }`}
+      >
+        <input
+          id="file-upload"
+          type="file"
+          accept="audio/*,video/*"
+          className="hidden"
+          onChange={handleFileChange}
+        />
+        <Upload size={28} className="text-[#F26522] mb-3" />
         <h3 className="font-bold text-slate-800">Tải file lên</h3>
-        <p className="text-xs text-slate-500 mt-1">Hệ thống sẽ giả lập chấm điểm</p>
       </div>
 
-
-      <div className={`border-2 rounded-2xl p-6 flex flex-col items-center justify-center transition-all duration-200 ${isRecording ? 'border-[#F26522] bg-[#fff0f5] shadow-inner' : 'border-[#F26522]/30 bg-orange-50/30 relative overflow-hidden'}`}>
-        {!isRecording && <div className="absolute top-0 right-0 bg-[#F26522] text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg">Khuyên dùng AI</div>}
-
-
+      {/* Record */}
+      <div className="border-2 rounded-2xl p-6 flex flex-col items-center justify-center border-[#F26522]/30 bg-orange-50/30">
         {isRecording ? (
           <>
+            <div className="mb-2 text-sm text-gray-600">
+              {liveTranscript || "Đang nghe..."}
+            </div>
+
             <div className="flex items-center gap-3 mb-4">
               <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
               <span className="font-mono text-lg font-bold text-[#F26522]">
-                {Math.floor(recordingTime / 60).toString().padStart(2, '0')}:{(recordingTime % 60).toString().padStart(2, '0')}
+                {Math.floor(recordingTime / 60)
+                  .toString()
+                  .padStart(2, "0")}
+                :
+                {(recordingTime % 60).toString().padStart(2, "0")}
               </span>
             </div>
-            <button onClick={stopRecording} className="bg-red-500 hover:bg-red-600 text-white p-3 rounded-full shadow-lg flex items-center justify-center gap-2 px-6 font-bold text-sm transition-transform active:scale-95">
-              <Square size={16} fill="currentColor" /> DỪNG THU
+
+            <button
+              onClick={stopRecording}
+              className="bg-red-500 text-white px-6 py-2 rounded-full flex items-center gap-2"
+            >
+              <Square size={16} /> Dừng
             </button>
           </>
         ) : (
           <>
             <Mic size={28} className="text-[#F26522] mb-3" />
-            <h3 className="font-bold text-slate-800 mb-2">Thu âm trực tiếp</h3>
-            <button onClick={startRecording} className="bg-[#F26522] hover:bg-[#d95618] text-white px-4 py-1.5 rounded-full text-xs font-bold transition-colors">
-              Chấm điểm bằng giọng nói
+            <button
+              onClick={startRecording}
+              className="bg-[#F26522] text-white px-4 py-2 rounded-full"
+            >
+              Bắt đầu thu
             </button>
           </>
         )}
       </div>
     </div>
   );
-}
+};
 
 
 // ---------------------------------------------------------
