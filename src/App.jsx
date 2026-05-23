@@ -906,7 +906,7 @@ function generateGradingResultFallback(transcript, expectedRawText, level, mode,
 }
 
 const evaluateWithGemini = async (transcript, expectedText, level, mode, lang, requirement = '') => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY; // Thay bằng VITE_GEMINI_API_KEY khi deploy
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
   const systemPrompt = `You are a strict but encouraging native Japanese language AI assistant grading a student's speech.
 Language for feedback: ${lang === 'en' ? 'English' : 'Vietnamese'}.
 Task Mode: ${mode} (vocab = single word, sentence = shadowing, topic = presentation, free = unstructured speech).
@@ -936,42 +936,31 @@ Instructions:
 }`;
 
   const payload = {
-    contents: [{ parts: [{ text: "Grade this student's speech based on the transcript provided." }] }],
-    systemInstruction: { parts: [{ text: systemPrompt }] },
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: "OBJECT",
-        properties: {
-          score: { type: "STRING" },
-          level: { type: "STRING" },
-          estimated_jlpt: { type: "STRING" },
-          feedback: { type: "STRING" },
-          pronunciation_score: { type: "STRING" },
-          fluency_score: { type: "STRING" },
-          accuracy_score: { type: "STRING" },
-          grammar_score: { type: "STRING" },
-          vocab_score: { type: "STRING" }
-        },
-        required: ["score", "level", "feedback", "pronunciation_score", "fluency_score"]
-      }
-    },
-    model: "gemini-2.5-flash"
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: "Grade this student's speech based on the transcript provided." }
+    ],
+    temperature: 0.2,
+    max_tokens: 800
   };
 
   const delays = [1000, 2000, 4000, 8000, 16000];
   for (let attempt = 0; attempt <= 5; attempt++) {
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
         body: JSON.stringify(payload)
       });
 
       if (!res.ok) throw new Error(`API Error ${res.status}`);
 
       const data = await res.json();
-      const textRes = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const textRes = data.choices?.[0]?.message?.content;
 
       if (textRes) {
         const match = textRes.match(/\{[\s\S]*\}/);
@@ -1077,49 +1066,28 @@ function AudioInput({ onAudioReady }) {
 
 
 const transcribeWithOpenAI  = async (file) => {
-  console.log("🚀 Calling Gemini...");
+  console.log("🚀 Calling OpenAI...");
 
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("model", "whisper-1");
 
-  const uploadFormData = new FormData();
-  uploadFormData.append("file", file);
-
-  const uploadRes = await fetch(uploadUrl, {
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: {
-      "X-Goog-Upload-Protocol": "multipart",
-      "X-Goog-Upload-Command": "upload, finalize",
-      "X-Goog-Header-Provider": "google-ai-studio",
+      Authorization: `Bearer ${apiKey}`
     },
-    body: uploadFormData,
+    body: formData
   });
 
-  const uploadData = await uploadRes.json();
-  const fileUri = uploadData.file.uri;
-
-  const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  
-  const promptData = {
-    contents: [
-      {
-        parts: [
-          { fileData: { mimeType: file.type, fileUri: fileUri } },
-          { text: "Transcribe this audio file accurately. Output only the transcribed text." }
-        ]
-      }
-    ]
-  };
-
-  const res = await fetch(modelUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(promptData)
-  });
+  if (!res.ok) {
+    throw new Error(`OpenAI transcription error ${res.status}`);
+  }
 
   const data = await res.json();
-  const transcript = data.candidates[0].content.parts[0].text;
-  console.log("✅ Gemini transcript:", transcript);
+  const transcript = data.text;
+  console.log("✅ OpenAI transcript:", transcript);
 
   return transcript;
 };
