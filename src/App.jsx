@@ -998,7 +998,7 @@ export const AudioInput = ({ onAudioReady }) => {
   const timerRef = useRef(null);
   const recognitionRef = useRef(null);
 
-  // ✅ chỉ dùng để hiển thị realtime (KHÔNG dùng làm kết quả)
+  // 🎤 SpeechRecognition (chỉ UI realtime)
   useEffect(() => {
     if (!window.SpeechRecognition && !window.webkitSpeechRecognition) return;
 
@@ -1020,21 +1020,18 @@ export const AudioInput = ({ onAudioReady }) => {
     recognitionRef.current = recognition;
   }, []);
 
-  // 🔥 FIX QUAN TRỌNG: ép audio ổn định
+  // 🎧 Recorder ổn định
   const createRecorder = (stream) => {
-    // ưu tiên mp4 vì ổn định hơn webm trên nhiều máy
     if (MediaRecorder.isTypeSupported("audio/mp4")) {
       return new MediaRecorder(stream, { mimeType: "audio/mp4" });
     }
-
     if (MediaRecorder.isTypeSupported("audio/webm")) {
       return new MediaRecorder(stream, { mimeType: "audio/webm" });
     }
-
     return new MediaRecorder(stream);
   };
 
-  // 🔥 OpenAI (auto detect language)
+  // 🧠 OpenAI
   const transcribe = async (file) => {
     const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
@@ -1062,7 +1059,6 @@ export const AudioInput = ({ onAudioReady }) => {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
       const recorder = createRecorder(stream);
 
       chunksRef.current = [];
@@ -1084,11 +1080,9 @@ export const AudioInput = ({ onAudioReady }) => {
         let finalTranscript = null;
 
         try {
-          // 🔥 LUÔN dùng OpenAI → không fallback browser
           finalTranscript = await transcribe(file);
-          console.log("✅ FINAL (AI):", finalTranscript);
         } catch (err) {
-          console.log("❌ OpenAI fail:", err);
+          console.log("OpenAI error:", err);
         }
 
         onAudioReady(
@@ -1106,7 +1100,6 @@ export const AudioInput = ({ onAudioReady }) => {
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
 
-      // realtime UI
       if (recognitionRef.current) {
         try {
           recognitionRef.current.start();
@@ -1117,7 +1110,7 @@ export const AudioInput = ({ onAudioReady }) => {
         setRecordingTime((prev) => prev + 1);
       }, 1000);
     } catch {
-      alert("Không thể mở microphone");
+      alert("Không thể truy cập microphone");
     }
   };
 
@@ -1151,7 +1144,7 @@ export const AudioInput = ({ onAudioReady }) => {
         onClick={() =>
           !isRecording && document.getElementById("file-upload").click()
         }
-        className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center cursor-pointer bg-white ${
+        className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 group bg-white border-slate-300 hover:border-[#F26522]/50 ${
           isRecording ? "opacity-50 pointer-events-none" : ""
         }`}
       >
@@ -1162,41 +1155,66 @@ export const AudioInput = ({ onAudioReady }) => {
           className="hidden"
           onChange={handleFileChange}
         />
-        <Upload size={28} className="text-[#F26522] mb-3" />
-        <h3 className="font-bold">Tải file</h3>
+        <Upload
+          size={28}
+          className="text-[#F26522] mb-3 group-hover:-translate-y-1 transition-transform"
+        />
+        <h3 className="font-bold text-slate-800">Tải file lên</h3>
+        <p className="text-xs text-slate-500 mt-1">
+          Hệ thống sẽ giả lập chấm điểm
+        </p>
       </div>
 
       {/* Record */}
-      <div className="border-2 rounded-2xl p-6 flex flex-col items-center justify-center">
+      <div
+        className={`border-2 rounded-2xl p-6 flex flex-col items-center justify-center transition-all duration-200 ${
+          isRecording
+            ? "border-[#F26522] bg-[#fff0f5] shadow-inner"
+            : "border-[#F26522]/30 bg-orange-50/30 relative overflow-hidden"
+        }`}
+      >
+        {!isRecording && (
+          <div className="absolute top-0 right-0 bg-[#F26522] text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg">
+            Khuyên dùng AI
+          </div>
+        )}
+
         {isRecording ? (
           <>
-            <div className="text-sm mb-2 text-gray-600">
+            {/* realtime text */}
+            <div className="text-xs text-gray-500 mb-2 text-center">
               {liveTranscript || "Đang nghe..."}
             </div>
 
-            <div className="mb-3 font-mono text-lg">
-              {Math.floor(recordingTime / 60)
-                .toString()
-                .padStart(2, "0")}
-              :
-              {(recordingTime % 60).toString().padStart(2, "0")}
+            <div className="flex items-center gap-3 mb-4">
+              <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
+              <span className="font-mono text-lg font-bold text-[#F26522]">
+                {Math.floor(recordingTime / 60)
+                  .toString()
+                  .padStart(2, "0")}
+                :
+                {(recordingTime % 60).toString().padStart(2, "0")}
+              </span>
             </div>
 
             <button
               onClick={stopRecording}
-              className="bg-red-500 text-white px-5 py-2 rounded-full flex items-center gap-2"
+              className="bg-red-500 hover:bg-red-600 text-white p-3 rounded-full shadow-lg flex items-center justify-center gap-2 px-6 font-bold text-sm transition-transform active:scale-95"
             >
-              <Square size={16} /> Dừng
+              <Square size={16} fill="currentColor" /> DỪNG THU
             </button>
           </>
         ) : (
           <>
-            <Mic size={28} className="mb-3 text-[#F26522]" />
+            <Mic size={28} className="text-[#F26522] mb-3" />
+            <h3 className="font-bold text-slate-800 mb-2">
+              Thu âm trực tiếp
+            </h3>
             <button
               onClick={startRecording}
-              className="bg-[#F26522] text-white px-4 py-2 rounded-full"
+              className="bg-[#F26522] hover:bg-[#d95618] text-white px-4 py-1.5 rounded-full text-xs font-bold transition-colors"
             >
-              Bắt đầu thu
+              Chấm điểm bằng giọng nói
             </button>
           </>
         )}
