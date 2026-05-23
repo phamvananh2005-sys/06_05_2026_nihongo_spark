@@ -987,62 +987,55 @@ Instructions:
 // ---------------------------------------------------------
 // COMPONENT: THU ÂM (TÍCH HỢP SPEECH RECOGNITION + OPENAI )
 // ---------------------------------------------------------
+
 export const AudioInput = ({ onAudioReady }) => {
   const [isRecording, setIsRecording] = useState(false);
-  const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [liveTranscript, setLiveTranscript] = useState("");
 
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
   const timerRef = useRef(null);
   const recognitionRef = useRef(null);
-  const chunksRef = useRef([]);
 
-  // ✅ Detect SpeechRecognition (chỉ để realtime UI)
-  const isSpeechSupported =
-    typeof window !== "undefined" &&
-    (window.SpeechRecognition || window.webkitSpeechRecognition);
-
-  // ✅ MIME fix (iPhone + Safari)
-  const getMimeType = () => {
-    if (typeof MediaRecorder === "undefined") return "";
-
-    if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
-    if (MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
-    if (MediaRecorder.isTypeSupported("audio/mpeg")) return "audio/mpeg";
-
-    return "";
-  };
-
-  // ✅ Setup SpeechRecognition (optional)
+  // ✅ chỉ dùng để hiển thị realtime (KHÔNG dùng làm kết quả)
   useEffect(() => {
-    if (!isSpeechSupported) return;
+    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) return;
 
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
     const recognition = new SpeechRecognition();
-
-    // ❗ không set lang → để browser tự theo hệ thống (đỡ sai hơn hardcode)
     recognition.continuous = true;
     recognition.interimResults = true;
 
-    recognition.onresult = (event) => {
+    recognition.onresult = (e) => {
       let text = "";
-      for (let i = 0; i < event.results.length; i++) {
-        text += event.results[i][0].transcript;
+      for (let i = 0; i < e.results.length; i++) {
+        text += e.results[i][0].transcript;
       }
       setLiveTranscript(text);
-    };
-
-    recognition.onerror = (e) => {
-      console.log("SpeechRecognition error:", e);
     };
 
     recognitionRef.current = recognition;
   }, []);
 
-  // 🔥 OpenAI transcribe (AUTO detect language)
-  const transcribeWithOpenAI = async (file) => {
+  // 🔥 FIX QUAN TRỌNG: ép audio ổn định
+  const createRecorder = (stream) => {
+    // ưu tiên mp4 vì ổn định hơn webm trên nhiều máy
+    if (MediaRecorder.isTypeSupported("audio/mp4")) {
+      return new MediaRecorder(stream, { mimeType: "audio/mp4" });
+    }
+
+    if (MediaRecorder.isTypeSupported("audio/webm")) {
+      return new MediaRecorder(stream, { mimeType: "audio/webm" });
+    }
+
+    return new MediaRecorder(stream);
+  };
+
+  // 🔥 OpenAI (auto detect language)
+  const transcribe = async (file) => {
     const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
     const formData = new FormData();
@@ -1060,30 +1053,17 @@ export const AudioInput = ({ onAudioReady }) => {
       }
     );
 
-    if (!res.ok) {
-      throw new Error(`Transcription error: ${res.status}`);
-    }
+    if (!res.ok) throw new Error("Transcribe failed");
 
     const data = await res.json();
     return data.text;
-  };
-
-  const handleFileChange = (e) => {
-    if (!e.target.files?.length) return;
-    const file = e.target.files[0];
-
-    onAudioReady(file, URL.createObjectURL(file), null, true);
   };
 
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      const mimeType = getMimeType();
-      const recorder = new MediaRecorder(
-        stream,
-        mimeType ? { mimeType } : {}
-      );
+      const recorder = createRecorder(stream);
 
       chunksRef.current = [];
       setLiveTranscript("");
@@ -1094,22 +1074,21 @@ export const AudioInput = ({ onAudioReady }) => {
 
       recorder.onstop = async () => {
         const blob = new Blob(chunksRef.current, {
-          type: mimeType || "audio/webm",
+          type: recorder.mimeType,
         });
 
-        const file = new File([blob], "recorded.webm", {
+        const file = new File([blob], "recorded.mp4", {
           type: blob.type,
         });
 
-        let finalTranscript = "";
+        let finalTranscript = null;
 
         try {
-          // 🔥 luôn dùng OpenAI → auto detect language
-          finalTranscript = await transcribeWithOpenAI(file);
-          console.log("✅ AI transcript:", finalTranscript);
+          // 🔥 LUÔN dùng OpenAI → không fallback browser
+          finalTranscript = await transcribe(file);
+          console.log("✅ FINAL (AI):", finalTranscript);
         } catch (err) {
-          console.log("❌ OpenAI error:", err);
-          finalTranscript = liveTranscript || null; // fallback nhẹ
+          console.log("❌ OpenAI fail:", err);
         }
 
         onAudioReady(
@@ -1124,10 +1103,10 @@ export const AudioInput = ({ onAudioReady }) => {
       };
 
       recorder.start();
-      setMediaRecorder(recorder);
+      mediaRecorderRef.current = recorder;
       setIsRecording(true);
 
-      // 🎤 start realtime recognition (optional)
+      // realtime UI
       if (recognitionRef.current) {
         try {
           recognitionRef.current.start();
@@ -1137,16 +1116,17 @@ export const AudioInput = ({ onAudioReady }) => {
       timerRef.current = setInterval(() => {
         setRecordingTime((prev) => prev + 1);
       }, 1000);
-    } catch (err) {
-      alert("Không thể truy cập microphone");
+    } catch {
+      alert("Không thể mở microphone");
     }
   };
 
   const stopRecording = () => {
-    if (!mediaRecorder) return;
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
 
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+    recorder.stop();
+    recorder.stream.getTracks().forEach((t) => t.stop());
 
     if (recognitionRef.current) {
       try {
@@ -1157,6 +1137,13 @@ export const AudioInput = ({ onAudioReady }) => {
     setIsRecording(false);
   };
 
+  const handleFileChange = (e) => {
+    if (!e.target.files?.length) return;
+    const file = e.target.files[0];
+
+    onAudioReady(file, URL.createObjectURL(file), null, true);
+  };
+
   return (
     <div className="grid md:grid-cols-2 gap-4">
       {/* Upload */}
@@ -1164,7 +1151,7 @@ export const AudioInput = ({ onAudioReady }) => {
         onClick={() =>
           !isRecording && document.getElementById("file-upload").click()
         }
-        className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer bg-white hover:border-[#F26522]/50 ${
+        className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center cursor-pointer bg-white ${
           isRecording ? "opacity-50 pointer-events-none" : ""
         }`}
       >
@@ -1176,38 +1163,35 @@ export const AudioInput = ({ onAudioReady }) => {
           onChange={handleFileChange}
         />
         <Upload size={28} className="text-[#F26522] mb-3" />
-        <h3 className="font-bold text-slate-800">Tải file lên</h3>
+        <h3 className="font-bold">Tải file</h3>
       </div>
 
       {/* Record */}
-      <div className="border-2 rounded-2xl p-6 flex flex-col items-center justify-center border-[#F26522]/30 bg-orange-50/30">
+      <div className="border-2 rounded-2xl p-6 flex flex-col items-center justify-center">
         {isRecording ? (
           <>
-            <div className="mb-2 text-sm text-gray-600">
+            <div className="text-sm mb-2 text-gray-600">
               {liveTranscript || "Đang nghe..."}
             </div>
 
-            <div className="flex items-center gap-3 mb-4">
-              <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
-              <span className="font-mono text-lg font-bold text-[#F26522]">
-                {Math.floor(recordingTime / 60)
-                  .toString()
-                  .padStart(2, "0")}
-                :
-                {(recordingTime % 60).toString().padStart(2, "0")}
-              </span>
+            <div className="mb-3 font-mono text-lg">
+              {Math.floor(recordingTime / 60)
+                .toString()
+                .padStart(2, "0")}
+              :
+              {(recordingTime % 60).toString().padStart(2, "0")}
             </div>
 
             <button
               onClick={stopRecording}
-              className="bg-red-500 text-white px-6 py-2 rounded-full flex items-center gap-2"
+              className="bg-red-500 text-white px-5 py-2 rounded-full flex items-center gap-2"
             >
               <Square size={16} /> Dừng
             </button>
           </>
         ) : (
           <>
-            <Mic size={28} className="text-[#F26522] mb-3" />
+            <Mic size={28} className="mb-3 text-[#F26522]" />
             <button
               onClick={startRecording}
               className="bg-[#F26522] text-white px-4 py-2 rounded-full"
