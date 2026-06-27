@@ -206,6 +206,133 @@ function FuriganaText({ text }) {
   );
 }
 
+// --- HELPER: Giọng mẫu tiếng Nhật chuẩn hơn cho nút nghe Chậm / Chuẩn ---
+// Lý do cần helper riêng: chỉ set utterance.lang = 'ja-JP' chưa đủ.
+// Một số trình duyệt vẫn có thể chọn nhầm voice mặc định, làm tiếng Nhật bị đọc sai âm.
+function getJapaneseSpeechText(textRaw = '') {
+  return String(textRaw || '')
+    // Với cú pháp Furigana [漢字|かな], ưu tiên phần đọc kana để TTS đọc đúng.
+    .replace(/\[([^|]+)\|([^\]]+)\]/g, '$2')
+    // Dọn bớt ký hiệu có thể làm TTS ngắt giọng lạ.
+    .replace(/[「」『』]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function scoreJapaneseVoice(voice) {
+  const name = String(voice?.name || '').toLowerCase();
+  const lang = String(voice?.lang || '').toLowerCase();
+  let score = 0;
+
+  if (lang === 'ja-jp') score += 120;
+  else if (lang.startsWith('ja')) score += 100;
+
+  if (/日本|japanese|japan/.test(name)) score += 80;
+  if (/google.*日本語|microsoft.*nanami|microsoft.*keita|microsoft.*ayumi|kyoko|otoya|haruka|ichiro|sayaka/.test(name)) score += 40;
+
+  // Voice online/natural của Edge/Chrome thường nghe tự nhiên hơn local voice cũ.
+  if (/natural|online|google/.test(name)) score += 15;
+
+  return score;
+}
+
+function getBestJapaneseVoice() {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+
+  const voices = window.speechSynthesis.getVoices() || [];
+  const japaneseVoices = voices
+    .filter(voice => {
+      const name = String(voice?.name || '');
+      const lang = String(voice?.lang || '');
+      return /^ja([-_]|$)/i.test(lang) || /日本|japanese|japan/i.test(name);
+    })
+    .sort((a, b) => scoreJapaneseVoice(b) - scoreJapaneseVoice(a));
+
+  return japaneseVoices[0] || null;
+}
+
+function preloadSpeechSynthesisVoices() {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return () => {};
+
+  const loadVoices = () => window.speechSynthesis.getVoices();
+  loadVoices();
+
+  window.speechSynthesis.addEventListener?.('voiceschanged', loadVoices);
+  return () => window.speechSynthesis.removeEventListener?.('voiceschanged', loadVoices);
+}
+
+function speakJapaneseModel(textRaw, {
+  speedMode = 'normal',
+  level = 'N5',
+  onStart = () => {},
+  onEnd = () => {},
+  onUnsupported = () => {}
+} = {}) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    onUnsupported();
+    return;
+  }
+
+  const synth = window.speechSynthesis;
+  const cleanText = getJapaneseSpeechText(textRaw);
+
+  if (!cleanText) {
+    onEnd();
+    return;
+  }
+
+  // Không dùng rate quá thấp như 0.35 vì dễ làm méo trường âm, âm ngắt và ngữ điệu tiếng Nhật.
+  const normalRateMap = {
+    N5: 0.82,
+    N4: 0.88,
+    N3: 0.95,
+    N2: 1.0,
+    N1: 1.05
+  };
+
+  const rate = speedMode === 'slow' ? 0.68 : (normalRateMap[String(level || '').toUpperCase()] || 0.92);
+
+  const startSpeaking = () => {
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    const japaneseVoice = getBestJapaneseVoice();
+
+    utterance.lang = japaneseVoice?.lang || 'ja-JP';
+    if (japaneseVoice) utterance.voice = japaneseVoice;
+
+    utterance.rate = rate;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+
+    utterance.onend = onEnd;
+    utterance.onerror = onEnd;
+
+    synth.cancel();
+    synth.speak(utterance);
+
+    // Chrome đôi khi bị kẹt ở trạng thái pause sau khi cancel/speak nhiều lần.
+    if (synth.paused) synth.resume();
+  };
+
+  onStart();
+
+  // Một số trình duyệt tải danh sách voice sau lần gọi đầu tiên.
+  // Nếu voice chưa sẵn sàng, chờ rất ngắn rồi mới speak để có cơ hội chọn đúng ja-JP voice.
+  if ((synth.getVoices() || []).length === 0) {
+    let hasStarted = false;
+    const handleVoicesReady = () => {
+      if (hasStarted) return;
+      hasStarted = true;
+      synth.removeEventListener?.('voiceschanged', handleVoicesReady);
+      startSpeaking();
+    };
+
+    synth.addEventListener?.('voiceschanged', handleVoicesReady);
+    window.setTimeout(handleVoicesReady, 250);
+  } else {
+    startSpeaking();
+  }
+}
+
 // --- MOCK DATABASE ---
 // Removed initialTopics and initialShadowing, now using Supabase
 
@@ -242,6 +369,10 @@ export default function App() {
     `;
     document.head.appendChild(style);
     return () => document.head.removeChild(style);
+  }, []);
+
+  useEffect(() => {
+    return preloadSpeechSynthesisVoices();
   }, []);
 
   // Fetch data from Supabase
@@ -1438,27 +1569,13 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
   useEffect(() => { if (!studentName) onRequireName(); }, []);
 
   const playModelAudio = (textRaw, speedMode = 'normal') => {
-    if (!('speechSynthesis' in window)) { alert("TTS not supported in your browser."); return; }
-
-    // Đổi $1 (Kanji) thành $2 (Hiragana) để máy đọc chuẩn xác 100% cách phát âm đã quy định
-    const cleanText = textRaw.replace(/\[([^|]+)\|([^\]]+)\]/g, '$2');
-    setIsPlayingModel(speedMode);
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = 'ja-JP';
-
-    if (speedMode === 'slow') {
-      utterance.rate = 0.35;
-    } else {
-      const rateMap = { 'N5': 0.8, 'N4': 0.9, 'N3': 1.0, 'N2': 1.1, 'N1': 1.2 };
-      utterance.rate = currentTopic ? (rateMap[currentTopic.level] || 1.0) : 1.0;
-    }
-
-    utterance.onend = () => setIsPlayingModel(false);
-    utterance.onerror = () => setIsPlayingModel(false);
-
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    speakJapaneseModel(textRaw, {
+      speedMode,
+      level: currentTopic?.level || 'N5',
+      onStart: () => setIsPlayingModel(speedMode),
+      onEnd: () => setIsPlayingModel(false),
+      onUnsupported: () => alert("TTS not supported in your browser.")
+    });
   };
 
   const handleAudioReady = (file, url, text, isFile) => {
@@ -1687,27 +1804,13 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
   };
 
   const playModelAudio = (textRaw, speedMode = 'normal') => {
-    if (!('speechSynthesis' in window)) { return; }
-
-    // Đổi $1 (Kanji) thành $2 (Hiragana) để máy đọc chuẩn xác 100% cách phát âm đã quy định
-    const cleanText = textRaw.replace(/\[([^|]+)\|([^\]]+)\]/g, '$2');
-    setIsPlayingModel(speedMode);
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = 'ja-JP';
-
-    if (speedMode === 'slow') {
-      utterance.rate = 0.35;
-    } else {
-      const rateMap = { 'N5': 0.8, 'N4': 0.9, 'N3': 1.0, 'N2': 1.1, 'N1': 1.2 };
-      utterance.rate = rateMap[level] || 1.0;
-    }
-
-    utterance.onend = () => setIsPlayingModel(false);
-    utterance.onerror = () => setIsPlayingModel(false);
-
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    speakJapaneseModel(textRaw, {
+      speedMode,
+      level,
+      onStart: () => setIsPlayingModel(speedMode),
+      onEnd: () => setIsPlayingModel(false),
+      onUnsupported: () => alert("TTS not supported in your browser.")
+    });
   };
 
   const handleAudioReady = async (file, url) => {
